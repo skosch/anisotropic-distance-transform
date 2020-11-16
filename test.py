@@ -12,7 +12,7 @@ maxval = (np.sqrt(2)*200) ** 2 * 3 * 2
 orig_img[40:60, 40:60] = 1.
 
 gdt_img = maxval - maxval * orig_img
-C_gdt.gdt(gdt_img, 1., 1., 1., 1.)
+C_gdt.gdt(gdt_img, 2., 3., 4, 5.)
 #C_gdt.gdt(gdt_img, 1, 1, 1, 1)
 plt.imshow(orig_img, cmap='gray')
 plt.imshow(gdt_img, alpha=0.2, cmap='gray')

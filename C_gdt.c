@@ -17,6 +17,10 @@
 
 #define SQ(s)s*s
 
+#ifndef INFINITY
+#define INFINITY 1.0/0.0;
+#endif
+
 static PyMethodDef gdt_methods[] = {
   { "gdt",gdt, METH_VARARGS, ""},
   {NULL, NULL, 0, NULL} /* Sentinel */
@@ -57,41 +61,39 @@ PyMODINIT_FUNC PyInit_C_gdt(void) {
 static void dt1d_isotropic(float *f, float *out, int len, float alpha, float _beta, int *v, float *z) {
     int k = 0; // the number of parabolas forming the lower envelope
     v[0] = 0;
-    z[0] = 0;
+    z[0] = -INFINITY; // v[0] is valid from z[0] to z[1], etc.
+    z[1] = INFINITY;
     int q;
+    float s;
     for (q = 1; q < len; q++) { // go through all points, left to right (or top to bottom)
-        // if the last-added parabola envelops previously added ones, drop those previously added ones
-        // by simply decrementing k:
-        while (k >= 0 && f[v[k]] + alpha * (v[k] - z[k]) * (v[k] - z[k]) >
-               f[q] + alpha * (q - z[k]) * (q - z[k]))
-            k--;
+        while (1) {
+            s = ((f[q]/alpha + q * q) - (f[v[k]]/alpha + v[k] * v[k])) / (2 * (q - v[k]));
 
-        // if k > 0 and s <= z[k] -> so this new parabola is going to take over to the left of where the last one was valid until
-        // or z[k] > s
-        // so
-
-        if (k < 0) {
-            k = 0;
-            v[0] = q;
-        }
-
-        // find the intersection between this new parabola q and the last (relevant) one v[k]:
-        float s = 1 + ((f[q]/alpha + q * q) - (f[v[k]]/alpha + v[k] * v[k])) / (2 * (q - v[k]));
-
-        // if an intersection was found (within the image), add q to the list of envelope parabolas
-        // and increment k.
-        if (s < len) {
-            k++;
-            v[k] = q;
-            z[k] = s;
+            // s could be to the left of the last "valid from"
+            // if that is so,
+            if (s <= z[k]) {
+                k--; // if wraps the last parabola, get rid of that last one
+                if (k < 0) {
+                    k = 0;
+                    v[k] = q;
+                }
+                continue;
+            } else {
+                k++;
+                v[k] = q;
+                z[k] = s;
+                z[k+1] = INFINITY;
+                break;
+            }
         }
     }
 
-    // Backward pass: note down the squared distances.
-    // Note that q here is simply every point in the array; v[k] are the parabolas' vertices
-    for (q = len - 1; q >= 0; q--) {
-        out[q] = alpha * (q - v[k]) * (q - v[k]) + f[v[k]]; // distance to the nearest v[k], squared (plus the original value f[v[k]])
-        if (q <= z[k]) k--;
+    k = 0; // start at the left
+    for (q = 0; q < len; q++) {
+        while (z[k+1] < q) {
+            k++;
+        }
+        out[q] = alpha * (q-v[k])*(q-v[k]) + f[v[k]];
     }
 }
 
@@ -112,80 +114,84 @@ static void dt1d_isotropic(float *f, float *out, int len, float alpha, float _be
  *   z: a pre-allocated buffer to keep track of the intersections between then parabolas v[k].
  */
 static void dt1d_anisotropic(float *f, float *out, int len, float alpha, float beta, int *v, float *z) {
-
     int k = 0; // the number of parabolas forming the lower envelope
     v[0] = 0;
-    z[0] = 0;
+    z[0] = -INFINITY; // v[0] is valid from z[0] to z[1], etc.
+    z[1] = INFINITY;
     int q;
+    float s;
+
     for (q = 1; q < len; q++) { // go through all points, left to right (or top to bottom)
-        // if the last-added parabola envelops previously added ones, drop those previously added ones
-        // by simply decrementing k:
-        while (k >= 0 && (f[v[k]] + (v[k]-z[k])*(v[k]-z[k]) > f[q] + (q-z[k])*(q-z[k])))
-            k--;
-        if (k < 0) {
-            k = 0;
-            v[0] = q;
-        }
-
-        // Find the intersection between this new parabola q and the last (relevant) one v[k].
-        // There are three situations we need to consider:
-        //   - right arm of v[k] intersects with right arm of q
-        //   - left arm of v[k] intersects with left arm of q
-        //   - right arm of v[k] intersects with left arm of q
-
-        // We can pre-compute a few values that will be reused:
-        float qmv = (q - v[k]);
-        float qmvt2 = 2*(q - v[k]);
-        float qmvsq = qmv * qmv;
-
-        float fqda = f[q] / alpha;
-        float fqdb = f[q] / beta;
-        float fvda = f[v[k]] / alpha;
-        float fvdb = f[v[k]] / beta;
-        float s = 0;
-
-        if (qmvsq + fvdb < fqdb) {
-            // right arm of v[k] intersects with right arm of q
-            // (if f[q] is high enough, relative to f[v[k]], that its vertex is inside v[k])
-            s = 1 + ((fqdb + q * q) - (fvdb + v[k]*v[k])) / qmvt2;
-
-        } else if (qmvsq + fqda < fvda) {
-            // left arm of v[k] intersects with left arm of q
-            // (if f[v[k]] is high enough, relative to f[q], that its vertex is inside q)
-            s = 1 + ((fqda + q * q) - (fvda + v[k]*v[k])) / qmvt2;
-
-        } else {
-            // right arm of v[k] intersects with left arm of q
-            // (if neither vertex is inside the other)
-            float sqrt_comp = sqrt(alpha*(beta*qmvsq + f[v[k]] - f[q]) + beta*(f[q] - f[v[k]]));
-            float fac_comp = alpha * q - beta * v[k];
-            float amb = alpha - beta;
-
-            s = 1 - (sqrt_comp - fac_comp) / amb;
-        }
 
 
-        // if an intersection was found (within the image), add q to the list of envelope parabolas
-        // and increment k.
-        if (s < len) {
-            k++;
-            v[k] = q;
-            z[k] = s;
+        while (1) {
+
+            // Find the intersection between this new parabola q and the last (relevant) one v[k].
+            // There are three situations we need to consider:
+            //   - right arm of v[k] intersects with right arm of q
+            //   - left arm of v[k] intersects with left arm of q
+            //   - right arm of v[k] intersects with left arm of q
+
+            // We can pre-compute a few values that will be reused:
+            float qmv = (q - v[k]);
+            float qmvt2 = 2*(q - v[k]);
+            float qmvsq = qmv * qmv;
+
+            float fqda = f[q] / alpha;
+            float fqdb = f[q] / beta;
+            float fvda = f[v[k]] / alpha;
+            float fvdb = f[v[k]] / beta;
+            float s = 0;
+
+            if (qmvsq + fvdb < fqdb) {
+                // right arm of v[k] intersects with right arm of q
+                // (if f[q] is high enough, relative to f[v[k]], that its vertex is inside v[k])
+                s = ((fqdb + q * q) - (fvdb + v[k]*v[k])) / qmvt2;
+
+            } else if (qmvsq + fqda < fvda) {
+                // left arm of v[k] intersects with left arm of q
+                // (if f[v[k]] is high enough, relative to f[q], that its vertex is inside q)
+                s = ((fqda + q * q) - (fvda + v[k]*v[k])) / qmvt2;
+
+            } else {
+                // right arm of v[k] intersects with left arm of q
+                // (if neither vertex is inside the other)
+                float sqrt_comp = sqrt(alpha*(beta*qmvsq + f[v[k]] - f[q]) + beta*(f[q] - f[v[k]]));
+                float fac_comp = alpha * q - beta * v[k];
+                float amb = alpha - beta;
+
+                s = - (sqrt_comp - fac_comp) / amb;
+            }
+
+            // s could be to the left of the last "valid from"
+            // if that is so,
+            if (s <= z[k]) {
+                k--; // if wraps the last parabola, get rid of that last one
+                if (k < 0) {
+                    k = 0;
+                    v[k] = q;
+                }
+                continue;
+            } else {
+                k++;
+                v[k] = q;
+                z[k] = s;
+                z[k+1] = INFINITY;
+                break;
+            }
         }
     }
 
-
-    // Backward pass: note down the squared distances.
-    // Note that q here is simply every point in the array; v[k] are the parabolas' vertices
-    for (q = len - 1; q >= 0; q--) {
-        // we compute the distance to the nearest v[k], squared (plus the original value f[v[k]]);
-        // but the factor depends on whether we're on the right or on the left of the vertex v[k]:
-        if (q > v[k]) {
-            out[q] = beta * (q - v[k]) * (q - v[k]) + f[v[k]];
-        } else {
-            out[q] = alpha * (q - v[k]) * (q - v[k]) + f[v[k]];
+    k = 0; // start at the left
+    for (q = 0; q < len; q++) {
+        while (z[k+1] < q) {
+            k++;
         }
-        if (q <= z[k]) k--;
+        if (q < v[k]) {
+            out[q] = alpha * (q-v[k])*(q-v[k]) + f[v[k]];
+        } else {
+            out[q] = beta * (q-v[k])*(q-v[k]) + f[v[k]];
+        }
     }
 }
 
