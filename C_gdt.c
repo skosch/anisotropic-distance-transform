@@ -1,45 +1,85 @@
-
-
 /*
+ * License: MIT
+ *
  * Ideas taken from:
  * http://www.cs.brown.edu/~pff/dt/
  * http://www.cs.auckland.ac.nz/~rklette/TeachAuckland.html/mm/MI30slides.pdf
+ *
+ * Original implementation: Jan Hosang, https://github.com/hosang/gdt
+ * Anisotropic extension by Sebastian Kosch
  */
 
-
 #include "Python.h"
-#include "arrayobject.h"
+#include "numpy/arrayobject.h"
 #include "C_gdt.h"
 
 #include <math.h>
 
-#define INF 1e20
+#define SQ(s)s*s
 
-
-static PyMethodDef _C_gdtMethods[] = {
-    {"gdt", gdt, METH_VARARGS},
-    {NULL, NULL}
+static PyMethodDef gdt_methods[] = {
+  { "gdt",gdt, METH_VARARGS, ""},
+  {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
-void init_C_gdt() {
-    (void) Py_InitModule("_C_gdt", _C_gdtMethods);
+static struct PyModuleDef cModPyDem =
+  {
+   PyModuleDef_HEAD_INIT,
+   "C_gdt", /* name of module */
+   "",      /* module documentation, may be NULL */
+   -1,      /* size of per-interpreter state of the module, or -1 if the module keeps state in global variables. */
+   gdt_methods
+  };
+
+PyMODINIT_FUNC PyInit_C_gdt(void) {
+    PyObject *m;
+    m = PyModule_Create(&cModPyDem);
+    if (!m) return NULL;
     import_array();
+    return m;
 }
 
-static void dt1d(float *f, float *out, int len, int *v, float *z) {
-    int k = 0;
+/*
+ * Function: dt1d_isotropic
+ * ----------------------------
+ * Performs a squared distance transform on a 1D array of values f, writing the result to out.
+ * This version is *isotropic*, i.e. the calculation is the same in all directions. This function
+ * is called if alpha == beta. See below for the *anisotropic* version.
+ *
+ *   f: A 1D array of initial distances.
+ *   out: A 1D array that the result will be written to.
+ *   len: The number of (valid) values in f.
+ *   alpha: a multiplier stretching each parabola vertically
+ *   _beta: assumed equal to alpha, thus irrelevant
+ *   v: a pre-allocated buffer to keep track of the vertices of the parabolas that form the envelope.
+ *   z: a pre-allocated buffer to keep track of the intersections between then parabolas v[k].
+ */
+static void dt1d_isotropic(float *f, float *out, int len, float alpha, float _beta, int *v, float *z) {
+    int k = 0; // the number of parabolas forming the lower envelope
     v[0] = 0;
     z[0] = 0;
     int q;
-    for (q = 1; q < len; q++) {
-        while (k >= 0 && f[v[k]] + (v[k] - z[k]) * (v[k] - z[k]) >
-                f[q] + (q - z[k]) * (q - z[k]))
+    for (q = 1; q < len; q++) { // go through all points, left to right (or top to bottom)
+        // if the last-added parabola envelops previously added ones, drop those previously added ones
+        // by simply decrementing k:
+        while (k >= 0 && f[v[k]] + alpha * (v[k] - z[k]) * (v[k] - z[k]) >
+               f[q] + alpha * (q - z[k]) * (q - z[k]))
             k--;
+
+        // if k > 0 and s <= z[k] -> so this new parabola is going to take over to the left of where the last one was valid until
+        // or z[k] > s
+        // so
+
         if (k < 0) {
             k = 0;
             v[0] = q;
         }
-        float s = 1 + ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * (q - v[k]));
+
+        // find the intersection between this new parabola q and the last (relevant) one v[k]:
+        float s = 1 + ((f[q]/alpha + q * q) - (f[v[k]]/alpha + v[k] * v[k])) / (2 * (q - v[k]));
+
+        // if an intersection was found (within the image), add q to the list of envelope parabolas
+        // and increment k.
         if (s < len) {
             k++;
             v[k] = q;
@@ -47,11 +87,119 @@ static void dt1d(float *f, float *out, int len, int *v, float *z) {
         }
     }
 
+    // Backward pass: note down the squared distances.
+    // Note that q here is simply every point in the array; v[k] are the parabolas' vertices
     for (q = len - 1; q >= 0; q--) {
-        out[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
+        out[q] = alpha * (q - v[k]) * (q - v[k]) + f[v[k]]; // distance to the nearest v[k], squared (plus the original value f[v[k]])
         if (q <= z[k]) k--;
     }
 }
+
+
+/*
+ * Function: dt1d_anisotropic
+ * ----------------------------
+ * Performs a squared distance transform on a 1D array of values f, writing the result to out.
+ * This version is *anisotropic*, i.e. forward distances are weighed differently than backward distances.
+ * This is called if alpha != beta.
+ *
+ *   f: A 1D array of initial distances.
+ *   out: A 1D array that the result will be written to.
+ *   len: The number of (valid) values in f.
+ *   alpha: A factor applied to the *left* arm of every parabola.
+ *   beta: A factor applied to the *right* arm of every parabola.
+ *   v: a pre-allocated buffer to keep track of the vertices of the parabolas that form the envelope.
+ *   z: a pre-allocated buffer to keep track of the intersections between then parabolas v[k].
+ */
+static void dt1d_anisotropic(float *f, float *out, int len, float alpha, float beta, int *v, float *z) {
+
+    int k = 0; // the number of parabolas forming the lower envelope
+    v[0] = 0;
+    z[0] = 0;
+    int q;
+    for (q = 1; q < len; q++) { // go through all points, left to right (or top to bottom)
+        // if the last-added parabola envelops previously added ones, drop those previously added ones
+        // by simply decrementing k:
+        while (k >= 0 && (f[v[k]] + (v[k]-z[k])*(v[k]-z[k]) > f[q] + (q-z[k])*(q-z[k])))
+            k--;
+        if (k < 0) {
+            k = 0;
+            v[0] = q;
+        }
+
+        // Find the intersection between this new parabola q and the last (relevant) one v[k].
+        // There are three situations we need to consider:
+        //   - right arm of v[k] intersects with right arm of q
+        //   - left arm of v[k] intersects with left arm of q
+        //   - right arm of v[k] intersects with left arm of q
+
+        // We can pre-compute a few values that will be reused:
+        float qmv = (q - v[k]);
+        float qmvt2 = 2*(q - v[k]);
+        float qmvsq = qmv * qmv;
+
+        float fqda = f[q] / alpha;
+        float fqdb = f[q] / beta;
+        float fvda = f[v[k]] / alpha;
+        float fvdb = f[v[k]] / beta;
+        float s = 0;
+
+        if (qmvsq + fvdb < fqdb) {
+            // right arm of v[k] intersects with right arm of q
+            // (if f[q] is high enough, relative to f[v[k]], that its vertex is inside v[k])
+            s = 1 + ((fqdb + q * q) - (fvdb + v[k]*v[k])) / qmvt2;
+
+        } else if (qmvsq + fqda < fvda) {
+            // left arm of v[k] intersects with left arm of q
+            // (if f[v[k]] is high enough, relative to f[q], that its vertex is inside q)
+            s = 1 + ((fqda + q * q) - (fvda + v[k]*v[k])) / qmvt2;
+
+        } else {
+            // right arm of v[k] intersects with left arm of q
+            // (if neither vertex is inside the other)
+            float sqrt_comp = sqrt(alpha*(beta*qmvsq + f[v[k]] - f[q]) + beta*(f[q] - f[v[k]]));
+            float fac_comp = alpha * q - beta * v[k];
+            float amb = alpha - beta;
+
+            s = 1 - (sqrt_comp - fac_comp) / amb;
+        }
+
+
+        // if an intersection was found (within the image), add q to the list of envelope parabolas
+        // and increment k.
+        if (s < len) {
+            k++;
+            v[k] = q;
+            z[k] = s;
+        }
+    }
+
+
+    // Backward pass: note down the squared distances.
+    // Note that q here is simply every point in the array; v[k] are the parabolas' vertices
+    for (q = len - 1; q >= 0; q--) {
+        // we compute the distance to the nearest v[k], squared (plus the original value f[v[k]]);
+        // but the factor depends on whether we're on the right or on the left of the vertex v[k]:
+        if (q > v[k]) {
+            out[q] = beta * (q - v[k]) * (q - v[k]) + f[v[k]];
+        } else {
+            out[q] = alpha * (q - v[k]) * (q - v[k]) + f[v[k]];
+        }
+        if (q <= z[k]) k--;
+    }
+}
+
+
+/*
+ * Functions: strided_load, strided_store
+ * ----------------------------
+ * Copies data into a buffer column-wise.
+ *
+ *   dest: A 1D buffer to copy into.
+ *   src: A 1D buffer to copy from.
+ *   num: The number of values to copy.
+ *   stride: The width (or height) of the array
+ */
 
 static inline void strided_load(float *dest, float *src, size_t num, size_t stride) {
     int i;
@@ -67,59 +215,117 @@ static inline void strided_store(float *dest, float *src, size_t num, size_t str
     }
 }
 
-static void dt2d(float *images, int depth, int height, int width) {
-    int stacksize = height;
-    if (width > height) stacksize = width;
-    int *intstack = malloc(stacksize * sizeof(int));
-    float *floatstack = malloc(stacksize * sizeof(float));
-    int q, d;
+/*
+ * Function: dt2d
+ * ----------------------------
+ * Goes through all rows and columns to apply the dt1d function to each.
+ *
+ *   f: A 2D buffer (height x width)
+ *   height: The number of rows
+ *   width: The number of columns
+ *   row_alpha: square of left_factor (see below)
+ *   row_beta: square of right_factor (see below)
+ *   col_alpha: square of top_factor (see below)
+ *   col_beta: square of bottom_factor (see below)
+ */
 
-    float *line_in = malloc(stacksize * sizeof(float));
-    float *line_out = malloc(stacksize * sizeof(float));
-    for (d = 0; d < depth; d++) {
-        float *f = images + d * height * width;
-        // transform rows
-        for (q = 0; q < height; q++) {
-            memcpy(line_in, f + (q * width), width * sizeof(float));
-            dt1d(line_in, f + (q * width), width, intstack, floatstack);
-        }
+static void dt2d(float *f, int height, int width,
+                 float row_alpha, float row_beta, float col_alpha, float col_beta) {
 
-        // transform cols
-        for (q = 0; q < width; q++) {
-            strided_load(line_in, f + q, height, width);
-            memcpy(line_out, line_in, height * sizeof(float));
-            dt1d(line_in, line_out, height, intstack, floatstack);
-            strided_store(f + q, line_out, height, width);
+    int longest_dim = (width > height) ? width : height;
+
+    int *vstack = malloc(longest_dim * sizeof(int)); // pre-allocated buffer to store v[k]
+    float *zstack = malloc(longest_dim * sizeof(float)); // pre-allocated buffer to store z[k]
+
+    float *line_in = malloc(longest_dim * sizeof(float)); // line_in is as long as the wider dimension.
+    float *line_out = malloc(longest_dim * sizeof(float));
+
+    int y, x; // for loop indices
+
+    // transform rows
+    void (*row_dt1d_func)(float*, float*, int, float, float, int*, float*) =
+        (row_alpha == row_beta ? &dt1d_isotropic : &dt1d_anisotropic);
+
+    for (y = 0; y < height; y++) {
+        // move one row of the image into line_in
+        memcpy(line_in, f + (y * width), width * sizeof(float));
+        // input, output, len, ints, floats
+        (*row_dt1d_func)(line_in, f + (y * width), width, row_alpha, row_beta, vstack, zstack);
+    }
+
+    // transform cols
+    void (*col_dt1d_func)(float*, float*, int, float, float, int*, float*) =
+        (col_alpha == col_beta ? &dt1d_isotropic : &dt1d_anisotropic);
+
+    for (x = 0; x < width; x++) {
+        strided_load(line_in, f + x, height, width);  // copy one column into line_in
+        memcpy(line_out, line_in, height * sizeof(float)); // copy the column into line_out also
+        (*col_dt1d_func)(line_in, line_out, height, col_alpha, col_beta, vstack, zstack); // apply the transform to line_in, and overwrite line_out where needed
+        strided_store(f + x, line_out, height, width); // write the result back to f.
+    }
+
+    // Outputs are squared distances, so we take the square root of everything
+    int index = 0;
+    for (y = 0; y < height; y++) {
+        for (x = 0; x < width; x++) {
+            index = (y * width) + x;
+            f[index] = sqrt(f[index]);
         }
     }
+
     free(line_in);
     free(line_out);
-
-    free(intstack);
-    free(floatstack);
+    free(vstack);
+    free(zstack);
 }
 
+/*
+ * Function: not_floatmatrix
+ * ----------------------------
+ * Checks whether the input is a 2D image of floats
+ *
+ *   mat: A 2D buffer (height x width)
+ */
 int not_floatmatrix(PyArrayObject *mat) { 
-    if (mat->descr->type_num != NPY_FLOAT32 || mat->nd != 3) {
+    if (mat->descr->type_num != NPY_FLOAT32 || mat->nd != 2) {
         PyErr_SetString(PyExc_ValueError,
-            "In not_floatmatrix: array must be of type Float and 3 dimensional (d x n x m).");
-        return 1; }
+                        "In not_floatmatrix: array must be of type Float, and 2-dimensional (n x m).");
+        return 1;
+    }
     return 0;
 }
 
+/*
+ * Function: gdt
+ * ----------------------------
+ * The main function – this is called from Python to perform the
+ * distance transform on the Numpy array mat.
+ * This function expects five PyObjects in *args:
+ *
+ *   mat: A 2D buffer (height x width)
+ *   left_factor: A multiplier that squishes the distance to the left
+ *   right_factor: A multiplier that squishes the distance to the right
+ *   top_factor: A multiplier that squishes the distance to the top
+ *   bottom_factor: A multiplier that squishes the distance to the bottom
+ *
+ * The output is written back to the same Numpy array.
+ */
 static PyObject *gdt(PyObject *self, PyObject *args) {
     PyArrayObject *mat;
-    if (!PyArg_ParseTuple(args, "O!", &PyArray_Type, &mat))
+    float left_factor, right_factor, top_factor, bottom_factor;
+    if (!PyArg_ParseTuple(args, "O!ffff", &PyArray_Type, &mat,
+                          &left_factor, &right_factor,
+                          &top_factor, &bottom_factor))
         return NULL;
 
     if (mat == NULL) return NULL;
     if (not_floatmatrix(mat)) return NULL;
-    int d = mat->dimensions[0];
-    int n = mat->dimensions[1];
-    int m = mat->dimensions[2];
+
+    int h = mat->dimensions[0];
+    int w = mat->dimensions[1];
+
     float *cout = (float *) mat->data;
-    dt2d(cout, d, n, m);
+    dt2d(cout, h, w, SQ(left_factor), SQ(right_factor), SQ(top_factor), SQ(bottom_factor));
     Py_INCREF(Py_None);
     return Py_None;
 }
-
