@@ -7,7 +7,7 @@ import pathlib
 HERE = pathlib.Path(__file__).parent
 README = (HERE / "README.md").read_text()
 
-c_adt = Extension('adt', sources = ['adt.c'], include_dirs = [np.get_include()])
+c_adt = Extension('adt', sources = ['anisotropic-distance-transform/ext/adt.c'], include_dirs = [np.get_include()])
 
 setup(name = 'anisotropic-distance-transform',
       version = '0.1',

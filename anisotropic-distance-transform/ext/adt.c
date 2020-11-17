@@ -138,7 +138,6 @@ static void dt1d_anisotropic(float *f, float *out, int len, float alpha, float b
             float fqdb = f[q] / beta;
             float fvda = f[v[k]] / alpha;
             float fvdb = f[v[k]] / beta;
-            float s = 0;
 
             if (qmvsq + fvdb < fqdb) {
                 // right arm of v[k] intersects with right arm of q
