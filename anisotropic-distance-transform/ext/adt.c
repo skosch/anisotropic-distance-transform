@@ -11,7 +11,6 @@
 
 #include "Python.h"
 #include "numpy/arrayobject.h"
-#include "adt.h"
 
 #include <math.h>
 
@@ -21,23 +20,26 @@
 #define INFINITY 1.0/0.0;
 #endif
 
+// declaration up here; actual definition is at the bottom
+static PyObject *adt(PyObject *self, PyObject *args);
+
 static PyMethodDef adt_methods[] = {
   { "adt",adt, METH_VARARGS, ""},
   {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
-static struct PyModuleDef cModPyDem =
+static struct PyModuleDef mod_def =
   {
    PyModuleDef_HEAD_INIT,
-   "C_adt", /* name of module */
+   "adt", /* name of module */
    "",      /* module documentation, may be NULL */
    -1,      /* size of per-interpreter state of the module, or -1 if the module keeps state in global variables. */
    adt_methods
   };
 
-PyMODINIT_FUNC PyInit_C_adt(void) {
+PyMODINIT_FUNC PyInit_adt(void) {
     PyObject *m;
-    m = PyModule_Create(&cModPyDem);
+    m = PyModule_Create(&mod_def);
     if (!m) return NULL;
     import_array();
     return m;
