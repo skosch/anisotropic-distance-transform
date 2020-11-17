@@ -5,13 +5,13 @@
  * http://www.cs.brown.edu/~pff/dt/
  * http://www.cs.auckland.ac.nz/~rklette/TeachAuckland.html/mm/MI30slides.pdf
  *
- * Original implementation: Jan Hosang, https://github.com/hosang/gdt
+ * Original implementation: Jan Hosang, https://github.com/hosang/adt
  * Anisotropic extension by Sebastian Kosch
  */
 
 #include "Python.h"
 #include "numpy/arrayobject.h"
-#include "C_gdt.h"
+#include "adt.h"
 
 #include <math.h>
 
@@ -21,21 +21,21 @@
 #define INFINITY 1.0/0.0;
 #endif
 
-static PyMethodDef gdt_methods[] = {
-  { "gdt",gdt, METH_VARARGS, ""},
+static PyMethodDef adt_methods[] = {
+  { "adt",adt, METH_VARARGS, ""},
   {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
 static struct PyModuleDef cModPyDem =
   {
    PyModuleDef_HEAD_INIT,
-   "C_gdt", /* name of module */
+   "C_adt", /* name of module */
    "",      /* module documentation, may be NULL */
    -1,      /* size of per-interpreter state of the module, or -1 if the module keeps state in global variables. */
-   gdt_methods
+   adt_methods
   };
 
-PyMODINIT_FUNC PyInit_C_gdt(void) {
+PyMODINIT_FUNC PyInit_C_adt(void) {
     PyObject *m;
     m = PyModule_Create(&cModPyDem);
     if (!m) return NULL;
@@ -122,10 +122,7 @@ static void dt1d_anisotropic(float *f, float *out, int len, float alpha, float b
     float s;
 
     for (q = 1; q < len; q++) { // go through all points, left to right (or top to bottom)
-
-
         while (1) {
-
             // Find the intersection between this new parabola q and the last (relevant) one v[k].
             // There are three situations we need to consider:
             //   - right arm of v[k] intersects with right arm of q
@@ -160,7 +157,7 @@ static void dt1d_anisotropic(float *f, float *out, int len, float alpha, float b
                 float fac_comp = alpha * q - beta * v[k];
                 float amb = alpha - beta;
 
-                s = - (sqrt_comp - fac_comp) / amb;
+                s = -(sqrt_comp - fac_comp) / amb;
             }
 
             // s could be to the left of the last "valid from"
@@ -302,7 +299,7 @@ int not_floatmatrix(PyArrayObject *mat) {
 }
 
 /*
- * Function: gdt
+ * Function: adt
  * ----------------------------
  * The main function – this is called from Python to perform the
  * distance transform on the Numpy array mat.
@@ -316,7 +313,7 @@ int not_floatmatrix(PyArrayObject *mat) {
  *
  * The output is written back to the same Numpy array.
  */
-static PyObject *gdt(PyObject *self, PyObject *args) {
+static PyObject *adt(PyObject *self, PyObject *args) {
     PyArrayObject *mat;
     float left_factor, right_factor, top_factor, bottom_factor;
     if (!PyArg_ParseTuple(args, "O!ffff", &PyArray_Type, &mat,
